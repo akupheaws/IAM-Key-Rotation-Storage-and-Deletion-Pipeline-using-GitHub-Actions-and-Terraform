@@ -38,13 +38,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install ruff==0.6.9 pytest pytest-mock
-          # Needed so tests can import and boto3 can resolve at runtime
           pip install boto3 botocore
 
       - name: Lint with Ruff
         run: ruff check --output-format=github .
 
-      - name: Clean Python caches (optional but helps)
+      - name: Clean Python caches
         run: |
           find . -type d -name "__pycache__" -exec rm -rf {} +
           find . -type f -name "*.py[co]" -delete
@@ -60,28 +59,29 @@ jobs:
       - name: Package rotate_and_deactivate_keys
         working-directory: lambdas/rotate_and_deactivate_keys
         run: |
-          rm -rf package ../../rotate_and_deactivate_keys.zip
+          set -euo pipefail
+          rm -rf build ../../rotate_and_deactivate_keys.zip
+          mkdir -p build
+          cp app.py build/
           if [ -s requirements.txt ]; then
-            pip install -r requirements.txt -t package
-          else
-            mkdir -p package
+            pip install -r requirements.txt -t build
           fi
-          cd package && zip -r ../../../rotate_and_deactivate_keys.zip . && cd ..
-          # add only handler source (exclude tests)
-          zip -g ../../rotate_and_deactivate_keys.zip app.py
+          cd build
+          zip -r ../../rotate_and_deactivate_keys.zip .
 
       # -------- PACKAGE: purge --------
       - name: Package purge_deactivated_keys
         working-directory: lambdas/purge_deactivated_keys
         run: |
-          rm -rf package ../../purge_deactivated_keys.zip
+          set -euo pipefail
+          rm -rf build ../../purge_deactivated_keys.zip
+          mkdir -p build
+          cp app.py build/
           if [ -s requirements.txt ]; then
-            pip install -r requirements.txt -t package
-          else
-            mkdir -p package
+            pip install -r requirements.txt -t build
           fi
-          cd package && zip -r ../../../purge_deactivated_keys.zip . && cd ..
-          zip -g ../../purge_deactivated_keys.zip app.py
+          cd build
+          zip -r ../../purge_deactivated_keys.zip .
 
       # -------- AUTH (STATIC KEYS) --------
       - name: Configure AWS credentials
