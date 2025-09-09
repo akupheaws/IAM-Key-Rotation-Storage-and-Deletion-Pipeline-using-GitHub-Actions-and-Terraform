@@ -1,8 +1,4 @@
-# ------------------------------------------------------------
-# Outputs for GitHub Actions Secrets
-# These values should be copied into your GitHub repository
-# Settings → Secrets and variables → Actions
-# ------------------------------------------------------------
+
 
 output "ROTATE_LAMBDA_ROLE_ARN" {
   description = "ARN of the IAM role attached to the rotate-and-deactivate-keys Lambda function"
