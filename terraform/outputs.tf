@@ -18,8 +18,8 @@ output "TARGET_USERNAME" {
 }
 
 output "SECRET_NAME" {
-  description = "Secrets Manager secret name where the new keys go"
-  value       = aws_secretsmanager_secret.iam_keys.name
+  description = "AWS Secrets Manager secret name where the new keys go"
+  value       = var.secret_name
 }
 
 output "SNS_TOPIC_ARN" {
