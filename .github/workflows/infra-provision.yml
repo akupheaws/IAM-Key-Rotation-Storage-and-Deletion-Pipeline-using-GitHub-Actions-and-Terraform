@@ -1,16 +1,21 @@
-name: Infra Provisioning (Bootstrap + Terraform)
+name: Infra Provisioning (Terraform with Remote Backend)
 
 on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/infra-provision.yml"
   workflow_dispatch:
     inputs:
       environment:
-        description: "Environment (dev, stage, prod)"
+        description: "Environment"
         required: true
         default: "dev"
         type: choice
         options: ["dev", "stage", "prod"]
       action:
-        description: "Terraform action"
+        description: "Terraform action (plan or apply)"
         required: true
         default: "plan"
         type: choice
@@ -21,75 +26,19 @@ permissions:
 
 env:
   TF_VERSION: "1.8.5"
-  TF_BACKEND_DIR: terraform-backend-bootstrap
   TF_WORKING_DIR: terraform
   TF_STATE_KEY_PREFIX: key-rotation
 
 jobs:
-  bootstrap:
-    name: Bootstrap backend (S3 + DynamoDB)
+  lint-validate:
     runs-on: ubuntu-latest
-    if: github.event.inputs.environment == 'dev' # only needed once
-    defaults:
-      run:
-        working-directory: ${{ env.TF_BACKEND_DIR }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      # --- Keep formatting consistent in repo ---
-      - name: Normalize line endings for .tf (bootstrap)
-        run: |
-          sudo apt-get update && sudo apt-get install -y dos2unix
-          git ls-files '*.tf' | xargs -I{} dos2unix {}
-
-      - name: Terraform init (local)
-        run: terraform init -input=false
-
-      # Write fmt so the job doesn’t fail just for whitespace
-      - name: Terraform fmt (write)
-        run: terraform fmt -recursive
-
-      # Optional: enforce formatting (leave commented if you don’t want a hard gate)
-      # - name: Terraform fmt (check)
-      #   run: terraform fmt -check -recursive
-
-      - name: Terraform validate
-        run: terraform validate
-
-      - name: Terraform apply backend (S3 + DynamoDB)
-        if: github.event.inputs.action == 'apply'
-        run: |
-          terraform apply -auto-approve -input=false \
-            -var="aws_region=${{ secrets.AWS_REGION }}" \
-            -var="state_bucket_name=${{ secrets.TF_STATE_BUCKET }}" \
-            -var="lock_table_name=${{ secrets.TF_STATE_TABLE }}"
-
-  provision:
-    name: Provision infra (remote backend)
-    runs-on: ubuntu-latest
-    needs: [bootstrap]
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
@@ -100,36 +49,99 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      # --- Fix the two issues that were breaking fmt ---
-      - name: Normalize line endings for .tf
+      - name: Terraform Init (S3 backend)
         run: |
-          sudo apt-get update && sudo apt-get install -y dos2unix
-          git ls-files '*.tf' | xargs -I{} dos2unix {}
-
-      - name: Terraform init (remote backend)
-        run: |
-          terraform init -reconfigure -input=false \
+          terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ github.event.inputs.environment }}.tfstate" \
+            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ github.event.inputs.environment || 'dev' }}.tfstate" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
             -backend-config="encrypt=true"
 
-      # Write fmt so whitespace/style never blocks provisioning
-      - name: Terraform fmt (write)
-        run: terraform fmt -recursive
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
 
-      # Optional: enforce formatting (uncomment if you want it)
-      # - name: Terraform fmt (check)
-      #   run: terraform fmt -check -recursive
-
-      - name: Terraform validate
+      - name: Terraform Validate
         run: terraform validate
 
-      - name: Terraform plan
-        if: github.event.inputs.action == 'plan'
-        run: terraform plan -input=false -out=tfplan.bin
+  plan:
+    needs: [lint-validate]
+    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'plan')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Terraform apply
-        if: github.event.inputs.action == 'apply'
-        run: terraform apply -input=false -auto-approve
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init (S3 backend)
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ github.event.inputs.environment || 'dev' }}.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform Plan
+        run: |
+          terraform plan -input=false -out=tfplan.bin \
+            -var="aws_region=${{ secrets.AWS_REGION }}" \
+            -var="target_username=${{ secrets.TARGET_USERNAME }}" \
+            -var="secret_name=${{ secrets.SECRET_NAME }}" \
+            -var="secret_json_key=${{ secrets.SECRET_JSON_KEY || 'current' }}"
+          terraform show -no-color tfplan.bin > tfplan.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ github.run_id }}
+          path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
+
+  apply:
+    needs: [lint-validate]
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init (S3 backend)
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ github.event.inputs.environment || 'dev' }}.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform Apply
+        run: |
+          terraform apply -input=false -auto-approve \
+            -var="aws_region=${{ secrets.AWS_REGION }}" \
+            -var="target_username=${{ secrets.TARGET_USERNAME }}" \
+            -var="secret_name=${{ secrets.SECRET_NAME }}" \
+            -var="secret_json_key=${{ secrets.SECRET_JSON_KEY || 'current' }}"
