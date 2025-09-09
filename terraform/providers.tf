@@ -6,12 +6,11 @@ terraform {
       version = ">= 5.50"
     }
   }
-  # Backend configured at init by the workflow via -backend-config
-  backend "s3" {}
 }
 
 provider "aws" {
   region = var.aws_region
 }
 
+# Keep only one aws_caller_identity here
 data "aws_caller_identity" "current" {}
