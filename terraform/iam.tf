@@ -2,7 +2,6 @@ locals {
   user_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${var.target_username}"
 }
 
-
 # ------------------------------------------------------------
 # Lambda Assume Role Policy
 # ------------------------------------------------------------
@@ -27,43 +26,43 @@ resource "aws_iam_role" "rotate_role" {
 
 data "aws_iam_policy_document" "rotate_inline" {
   statement {
-    sid    = "IAMListCreateUpdate"
-    effect = "Allow"
+    sid     = "IAMListCreateUpdate"
+    effect  = "Allow"
     actions = [
       "iam:ListAccessKeys",
       "iam:CreateAccessKey",
-      "iam:UpdateAccessKey"
+      "iam:UpdateAccessKey",
     ]
     resources = [local.user_arn]
   }
 
   statement {
-    sid    = "SecretsWrite"
-    effect = "Allow"
+    sid     = "SecretsWrite"
+    effect  = "Allow"
     actions = [
       "secretsmanager:CreateSecret",
       "secretsmanager:PutSecretValue",
-      "secretsmanager:DescribeSecret"
+      "secretsmanager:DescribeSecret",
     ]
     resources = [
-      "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_name}*"
+      "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_name}*",
     ]
   }
 
   statement {
-    sid    = "SNSPublish"
-    effect = "Allow"
+    sid     = "SNSPublish"
+    effect  = "Allow"
     actions = ["sns:Publish"]
-    resources = [aws_sns_topic.notify.arn]
+    resources = [aws_sns_topic.key_rotation.arn]
   }
 
   statement {
-    sid    = "Logs"
-    effect = "Allow"
+    sid     = "Logs"
+    effect  = "Allow"
     actions = [
       "logs:CreateLogGroup",
       "logs:CreateLogStream",
-      "logs:PutLogEvents"
+      "logs:PutLogEvents",
     ]
     resources = ["*"]
   }
@@ -89,22 +88,22 @@ resource "aws_iam_role" "purge_role" {
 
 data "aws_iam_policy_document" "purge_inline" {
   statement {
-    sid    = "IAMListDelete"
-    effect = "Allow"
+    sid     = "IAMListDelete"
+    effect  = "Allow"
     actions = [
       "iam:ListAccessKeys",
-      "iam:DeleteAccessKey"
+      "iam:DeleteAccessKey",
     ]
     resources = [local.user_arn]
   }
 
   statement {
-    sid    = "Logs"
-    effect = "Allow"
+    sid     = "Logs"
+    effect  = "Allow"
     actions = [
       "logs:CreateLogGroup",
       "logs:CreateLogStream",
-      "logs:PutLogEvents"
+      "logs:PutLogEvents",
     ]
     resources = ["*"]
   }

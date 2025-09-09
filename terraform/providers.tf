@@ -1,7 +1,8 @@
 terraform {
   required_version = ">= 1.6.0"
 
-  backend "s3" {}  # values come from -backend-config in your workflow
+  # Backend values are provided via -backend-config in the workflow
+  backend "s3" {}
 
   required_providers {
     aws = {
@@ -15,5 +16,5 @@ provider "aws" {
   region = var.aws_region
 }
 
-# Keep this here (single definition for the whole module)
+# Single definition for caller identity (do not duplicate in other files)
 data "aws_caller_identity" "current" {}
