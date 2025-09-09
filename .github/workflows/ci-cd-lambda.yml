@@ -1,119 +1,71 @@
-name: CI / CD (Lambda - Lint, Test, Deploy)
+name: CI/CD — Lambda (Rotate & Purge IAM Keys)
 
 on:
   push:
     branches: ["main"]
+    paths:
+      - "lambdas/**"
+      - ".github/workflows/ci-cd-lambda.yml"
   pull_request:
     branches: ["main"]
-  workflow_dispatch: {}
+    paths:
+      - "lambdas/**"
+      - ".github/workflows/ci-cd-lambda.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment label for the deployment (badge only)"
+        required: true
+        default: "dev"
+        type: choice
+        options: ["dev","stage","prod"]
 
 permissions:
   contents: read
 
 env:
-  AWS_REGION: us-east-1
   PYTHON_VERSION: "3.12"
+  AWS_REGION: ${{ secrets.AWS_REGION }}
   ROTATE_FUNC_NAME: rotate-and-deactivate-keys
-  PURGE_FUNC_NAME: purge-deactivated-keys
+  PURGE_FUNC_NAME:  purge-deactivated-keys
   ARTIFACT_DIR: artifacts
   ROTATE_ZIP: artifacts/rotate_and_deactivate_keys.zip
-  PURGE_ZIP: artifacts/purge_deactivated_keys.zip
+  PURGE_ZIP:  artifacts/purge_deactivated_keys.zip
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lint-test-package-deploy:
+  build-test-deploy:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment || 'dev' }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # -------- LINT & TEST DEPS --------
-      - name: Install lint & test deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff==0.6.9 pytest pytest-mock
-          # Needed so tests can import boto3 locally (Lambda runtime has it)
-          pip install boto3 botocore
-
-      - name: Lint with Ruff
-        run: ruff check --output-format=github .
-
-      - name: Clean Python caches
-        run: |
-          find . -type d -name "__pycache__" -exec rm -rf {} +
-          find . -type f -name "*.py[co]" -delete
-
-      # -------- TEST --------
-      - name: Run tests
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
-        run: pytest -q
-
-      - name: Prepare artifact dir
-        run: |
-          rm -rf "${{ env.ARTIFACT_DIR }}"
-          mkdir -p "${{ env.ARTIFACT_DIR }}"
-
-      # -------- PACKAGE: rotate --------
-      - name: Package rotate_and_deactivate_keys
-        working-directory: lambdas/rotate_and_deactivate_keys
-        run: |
-          set -euo pipefail
-          rm -rf build
-          mkdir -p build
-          cp app.py build/
-          if [ -s requirements.txt ]; then
-            pip install -r requirements.txt -t build
-          fi
-          (cd build && zip -r "${GITHUB_WORKSPACE}/${{ env.ROTATE_ZIP }}" .)
-
-      # -------- PACKAGE: purge --------
-      - name: Package purge_deactivated_keys
-        working-directory: lambdas/purge_deactivated_keys
-        run: |
-          set -euo pipefail
-          rm -rf build
-          mkdir -p build
-          cp app.py build/
-          if [ -s requirements.txt ]; then
-            pip install -r requirements.txt -t build
-          fi
-          (cd build && zip -r "${GITHUB_WORKSPACE}/${{ env.PURGE_ZIP }}" .)
-
-      - name: Show artifacts
-        run: |
-          ls -lah "${{ env.ARTIFACT_DIR }}"
-          test -s "${{ env.ROTATE_ZIP }}" || (echo "Missing rotate zip" && exit 1)
-          test -s "${{ env.PURGE_ZIP }}"  || (echo "Missing purge zip" && exit 1)
-
-      # -------- AUTH (STATIC KEYS) --------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region:            ${{ secrets.AWS_REGION }}
 
-      # -------- PRE-FLIGHT SECRET CHECKS --------
+      # ---- PRE-FLIGHT SECRET CHECKS (fail fast if missing) ----
       - name: Check required secrets
         shell: bash
         env:
           ROTATE_LAMBDA_ROLE_ARN: ${{ secrets.ROTATE_LAMBDA_ROLE_ARN }}
-          PURGE_LAMBDA_ROLE_ARN: ${{ secrets.PURGE_LAMBDA_ROLE_ARN }}
-          TARGET_USERNAME:        ${{ secrets.TARGET_USERNAME }}
-          SECRET_NAME:            ${{ secrets.SECRET_NAME }}
-          SNS_TOPIC_ARN:          ${{ secrets.SNS_TOPIC_ARN }}
-          SECRET_JSON_KEY:        ${{ secrets.SECRET_JSON_KEY }}
+          PURGE_LAMBDA_ROLE_ARN:  ${{ secrets.PURGE_LAMBDA_ROLE_ARN }}
+          TARGET_USERNAME:         ${{ secrets.TARGET_USERNAME }}
+          SECRET_NAME:             ${{ secrets.SECRET_NAME }}
+          SNS_TOPIC_ARN:           ${{ secrets.SNS_TOPIC_ARN }}
         run: |
           set -euo pipefail
           : "${ROTATE_LAMBDA_ROLE_ARN:?Missing secret ROTATE_LAMBDA_ROLE_ARN}"
@@ -123,50 +75,146 @@ jobs:
           : "${SNS_TOPIC_ARN:?Missing secret SNS_TOPIC_ARN}"
           echo "All required secrets present."
 
-      # -------- CREATE IF MISSING / DEPLOY: ROTATE --------
-      - name: Ensure ${{ env.ROTATE_FUNC_NAME }} exists
-        shell: bash
+      # ---- Install dev tooling and deps ----
+      - name: Install toolchain (ruff / pytest) + boto libs
         run: |
-          if ! aws lambda get-function --function-name "${ROTATE_FUNC_NAME}" >/dev/null 2>&1; then
-            aws lambda create-function \
-              --function-name "${ROTATE_FUNC_NAME}" \
-              --runtime python3.12 \
-              --handler app.lambda_handler \
-              --role "${{ secrets.ROTATE_LAMBDA_ROLE_ARN }}" \
-              --timeout 60 \
-              --memory-size 256 \
-              --zip-file fileb://"${{ env.ROTATE_ZIP }}"
+          python -m pip install --upgrade pip
+          pip install ruff pytest boto3 botocore moto
+
+      - name: Install Lambda deps (rotate)
+        working-directory: lambdas/rotate_and_deactivate_keys
+        run: |
+          if [ -f requirements.txt ] && [ -s requirements.txt ]; then
+            pip install -r requirements.txt -t package
+          else
+            mkdir -p package
           fi
 
-      - name: Deploy ${{ env.ROTATE_FUNC_NAME }}
+      - name: Install Lambda deps (purge)
+        working-directory: lambdas/purge_deactivated_keys
         run: |
-          aws lambda update-function-code \
-            --function-name "${ROTATE_FUNC_NAME}" \
-            --zip-file fileb://"${{ env.ROTATE_ZIP }}"
+          if [ -f requirements.txt ] && [ -s requirements.txt ]; then
+            pip install -r requirements.txt -t package
+          else
+            mkdir -p package
+          fi
+
+      # ---- Lint ----
+      - name: Ruff (lint)
+        run: |
+          ruff --version
+          ruff check --output-format=github lambdas
+
+      # ---- Test ----
+      - name: Pytest
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          # Provide env vars some tests may expect:
+          TARGET_USERNAME: ${{ secrets.TARGET_USERNAME }}
+          SECRET_NAME:     ${{ secrets.SECRET_NAME }}
+          SNS_TOPIC_ARN:   ${{ secrets.SNS_TOPIC_ARN }}
+          SECRET_JSON_KEY: ${{ secrets.SECRET_JSON_KEY || 'current' }}
+        run: |
+          pytest -q
+
+      # ---- Build artifacts ----
+      - name: Prep artifact directory
+        run: mkdir -p "${ARTIFACT_DIR}"
+
+      - name: Build ZIP (rotate)
+        working-directory: lambdas/rotate_and_deactivate_keys
+        run: |
+          set -euo pipefail
+          rm -f ../../${{ env.ROTATE_ZIP }} build.zip || true
+          # zip dependencies
+          (cd package && zip -r ../build.zip .)
+          # add handler (flatten path)
+          zip -j build.zip app.py
+          mv build.zip ../../${{ env.ROTATE_ZIP }}
+
+      - name: Build ZIP (purge)
+        working-directory: lambdas/purge_deactivated_keys
+        run: |
+          set -euo pipefail
+          rm -f ../../${{ env.PURGE_ZIP }} build.zip || true
+          (cd package && zip -r ../build.zip .)
+          zip -j build.zip app.py
+          mv build.zip ../../${{ env.PURGE_ZIP }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zips-${{ github.run_id }}
+          path: |
+            ${{ env.ROTATE_ZIP }}
+            ${{ env.PURGE_ZIP }}
+
+      # ---- Deploy (idempotent, with waiters to avoid Pending/Creating conflicts) ----
+      - name: Deploy Lambda (rotate)
+        shell: bash
+        env:
+          FUNC_NAME: ${{ env.ROTATE_FUNC_NAME }}
+          ROLE_ARN:  ${{ secrets.ROTATE_LAMBDA_ROLE_ARN }}
+          ZIP:       ${{ env.ROTATE_ZIP }}
+        run: |
+          set -euo pipefail
+
+          if aws lambda get-function --function-name "$FUNC_NAME" >/dev/null 2>&1; then
+            echo "Function exists; wait ACTIVE then update code..."
+            aws lambda wait function-active --function-name "$FUNC_NAME" || true
+            aws lambda update-function-code --function-name "$FUNC_NAME" --zip-file "fileb://$ZIP"
+            aws lambda wait function-updated --function-name "$FUNC_NAME"
+          else
+            echo "Creating function $FUNC_NAME..."
+            aws lambda create-function \
+              --function-name "$FUNC_NAME" \
+              --runtime python3.12 \
+              --handler app.lambda_handler \
+              --role "$ROLE_ARN" \
+              --timeout 60 \
+              --memory-size 256 \
+              --zip-file "fileb://$ZIP"
+            echo "Waiting until ACTIVE..."
+            aws lambda wait function-active --function-name "$FUNC_NAME"
+          fi
+
+          echo "Updating configuration (env vars)..."
           aws lambda update-function-configuration \
-            --function-name "${ROTATE_FUNC_NAME}" \
+            --function-name "$FUNC_NAME" \
             --environment "Variables={TARGET_USERNAME=${{ secrets.TARGET_USERNAME }},SECRET_NAME=${{ secrets.SECRET_NAME }},SNS_TOPIC_ARN=${{ secrets.SNS_TOPIC_ARN }},SECRET_JSON_KEY=${{ secrets.SECRET_JSON_KEY || 'current' }}}"
+          aws lambda wait function-updated --function-name "$FUNC_NAME"
 
-      # -------- CREATE IF MISSING / DEPLOY: PURGE --------
-      - name: Ensure ${{ env.PURGE_FUNC_NAME }} exists
+      - name: Deploy Lambda (purge)
         shell: bash
+        env:
+          FUNC_NAME: ${{ env.PURGE_FUNC_NAME }}
+          ROLE_ARN:  ${{ secrets.PURGE_LAMBDA_ROLE_ARN }}
+          ZIP:       ${{ env.PURGE_ZIP }}
         run: |
-          if ! aws lambda get-function --function-name "${PURGE_FUNC_NAME}" >/dev/null 2>&1; then
+          set -euo pipefail
+
+          if aws lambda get-function --function-name "$FUNC_NAME" >/dev/null 2>&1; then
+            echo "Function exists; wait ACTIVE then update code..."
+            aws lambda wait function-active --function-name "$FUNC_NAME" || true
+            aws lambda update-function-code --function-name "$FUNC_NAME" --zip-file "fileb://$ZIP"
+            aws lambda wait function-updated --function-name "$FUNC_NAME"
+          else
+            echo "Creating function $FUNC_NAME..."
             aws lambda create-function \
-              --function-name "${PURGE_FUNC_NAME}" \
+              --function-name "$FUNC_NAME" \
               --runtime python3.12 \
               --handler app.lambda_handler \
-              --role "${{ secrets.PURGE_LAMBDA_ROLE_ARN }}" \
+              --role "$ROLE_ARN" \
               --timeout 60 \
               --memory-size 256 \
-              --zip-file fileb://"${{ env.PURGE_ZIP }}"
+              --zip-file "fileb://$ZIP"
+            echo "Waiting until ACTIVE..."
+            aws lambda wait function-active --function-name "$FUNC_NAME"
           fi
 
-      - name: Deploy ${{ env.PURGE_FUNC_NAME }}
-        run: |
-          aws lambda update-function-code \
-            --function-name "${PURGE_FUNC_NAME}" \
-            --zip-file fileb://"${{ env.PURGE_ZIP }}"
+          echo "Updating configuration (env vars)..."
           aws lambda update-function-configuration \
-            --function-name "${PURGE_FUNC_NAME}" \
-            --environment "Variables={TARGET_USERNAME=${{ secrets.TARGET_USERNAME }}}"
+            --function-name "$FUNC_NAME" \
+            --environment "Variables={TARGET_USERNAME=${{ secrets.TARGET_USERNAME }},SECRET_NAME=${{ secrets.SECRET_NAME }},SNS_TOPIC_ARN=${{ secrets.SNS_TOPIC_ARN }},SECRET_JSON_KEY=${{ secrets.SECRET_JSON_KEY || 'current' }}}"
+          aws lambda wait function-updated --function-name "$FUNC_NAME"
