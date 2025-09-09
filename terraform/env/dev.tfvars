@@ -6,4 +6,11 @@ sns_topic_name              = "iam-key-rotation-notify-dev"
 sns_email_subscribers       = []
 rotate_lambda_function_name = "rotate-and-deactivate-keys"
 purge_lambda_function_name  = "purge-deactivated-keys"
-enable_eventbridge_targets  = false
+
+enable_eventbridge_targets = true
+
+rotate_lambda_arn  = "arn:aws:lambda:us-east-1:123456789012:function:rotate-and-deactivate-keys"
+rotate_lambda_name = "rotate-and-deactivate-keys"
+
+purge_lambda_arn   = "arn:aws:lambda:us-east-1:123456789012:function:purge-deactivated-keys"
+purge_lambda_name  = "purge-deactivated-keys"
