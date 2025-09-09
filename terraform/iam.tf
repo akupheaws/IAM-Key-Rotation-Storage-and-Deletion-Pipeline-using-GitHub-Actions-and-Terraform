@@ -2,9 +2,6 @@ locals {
   user_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${var.target_username}"
 }
 
-# ------------------------------------------------------------
-# Lambda Assume Role Policy
-# ------------------------------------------------------------
 data "aws_iam_policy_document" "lambda_assume_role" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -16,9 +13,6 @@ data "aws_iam_policy_document" "lambda_assume_role" {
   }
 }
 
-# ------------------------------------------------------------
-# Rotate Lambda Role + Policy
-# ------------------------------------------------------------
 resource "aws_iam_role" "rotate_lambda_exec" {
   name               = var.rotate_lambda_role_name
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
@@ -31,9 +25,8 @@ data "aws_iam_policy_document" "rotate_inline" {
     actions = [
       "iam:ListAccessKeys",
       "iam:CreateAccessKey",
-      "iam:UpdateAccessKey",
+      "iam:UpdateAccessKey"
     ]
-  # limit to the target user only
     resources = [local.user_arn]
   }
 
@@ -43,10 +36,10 @@ data "aws_iam_policy_document" "rotate_inline" {
     actions = [
       "secretsmanager:CreateSecret",
       "secretsmanager:PutSecretValue",
-      "secretsmanager:DescribeSecret",
+      "secretsmanager:DescribeSecret"
     ]
     resources = [
-      "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_name}*",
+      "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:${var.secret_name}*"
     ]
   }
 
@@ -63,7 +56,7 @@ data "aws_iam_policy_document" "rotate_inline" {
     actions = [
       "logs:CreateLogGroup",
       "logs:CreateLogStream",
-      "logs:PutLogEvents",
+      "logs:PutLogEvents"
     ]
     resources = ["*"]
   }
@@ -79,9 +72,6 @@ resource "aws_iam_role_policy_attachment" "rotate_attach" {
   policy_arn = aws_iam_policy.rotate_policy.arn
 }
 
-# ------------------------------------------------------------
-# Purge Lambda Role + Policy
-# ------------------------------------------------------------
 resource "aws_iam_role" "purge_lambda_exec" {
   name               = var.purge_lambda_role_name
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
@@ -93,9 +83,8 @@ data "aws_iam_policy_document" "purge_inline" {
     effect  = "Allow"
     actions = [
       "iam:ListAccessKeys",
-      "iam:DeleteAccessKey",
+      "iam:DeleteAccessKey"
     ]
-  # limit to the target user only
     resources = [local.user_arn]
   }
 
@@ -105,7 +94,7 @@ data "aws_iam_policy_document" "purge_inline" {
     actions = [
       "logs:CreateLogGroup",
       "logs:CreateLogStream",
-      "logs:PutLogEvents",
+      "logs:PutLogEvents"
     ]
     resources = ["*"]
   }
