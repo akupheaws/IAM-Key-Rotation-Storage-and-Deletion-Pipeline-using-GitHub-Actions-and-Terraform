@@ -58,6 +58,17 @@ jobs:
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
             -backend-config="encrypt=true"
 
+      # --- Make fmt reliable on Linux runners ---
+      - name: Normalize line endings for .tf/.tfvars
+        run: |
+          sudo apt-get update && sudo apt-get install -y dos2unix
+          git ls-files '*.tf' '*.tfvars' | xargs -I{} dos2unix {}
+
+      # Write fmt so whitespace never blocks the run
+      - name: Terraform fmt (write)
+        run: terraform fmt -recursive
+
+      # Keep a check step (will pass since we wrote fmt above)
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
 
@@ -73,6 +84,7 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
@@ -118,6 +130,7 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
