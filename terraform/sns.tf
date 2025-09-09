@@ -1,16 +1,12 @@
-# ------------------------------------------------------------
-# SNS topic for IAM key rotation notifications
-# ------------------------------------------------------------
-
 resource "aws_sns_topic" "key_rotation" {
   name = "iam-key-rotation-topic"
 }
 
-# Optional email subscription (set email in tfvars or skip)
+# Your email (default as requested)
 variable "notification_email" {
-  description = "Email address to subscribe to key rotation notifications (optional)"
+  description = "Email address to subscribe to key rotation notifications"
   type        = string
-  default     = ""
+  default     = "akupheaws@gmail.com"
 }
 
 resource "aws_sns_topic_subscription" "email" {

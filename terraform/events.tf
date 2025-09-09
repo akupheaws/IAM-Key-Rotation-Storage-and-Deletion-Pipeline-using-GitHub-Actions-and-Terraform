@@ -1,7 +1,6 @@
 # ------------------------------------------------------------
-# EventBridge schedules to invoke Lambdas (optional)
-# Use enable_eventbridge_targets to turn on/off
-# Pass Lambda ARNs/names via variables since code is deployed via GitHub Actions
+# EventBridge schedules for Rotate/Purge Lambdas
+# Uses data sources to resolve ARNs by function name
 # ------------------------------------------------------------
 
 variable "enable_eventbridge_targets" {
@@ -19,32 +18,46 @@ variable "rotation_schedule_expression" {
 variable "purge_schedule_expression" {
   description = "Schedule for purge lambda (EventBridge cron or rate)"
   type        = string
-  default     = "cron(30 3 * * ? *)" # daily 03:30 UTC
-}
-
-# Provide these from outside (e.g., via tfvars or as outputs you paste from AWS)
-variable "rotate_lambda_arn" {
-  description = "ARN of the rotate-and-deactivate-keys Lambda"
-  type        = string
-  default     = ""
+  default     = "cron(30 3 * * ? *)"  # daily 03:30 UTC
 }
 
 variable "rotate_lambda_name" {
-  description = "Function name of the rotate Lambda (e.g., rotate-and-deactivate-keys)"
+  description = "Function name of the rotate Lambda"
   type        = string
   default     = "rotate-and-deactivate-keys"
 }
 
-variable "purge_lambda_arn" {
-  description = "ARN of the purge-deactivated-keys Lambda"
-  type        = string
-  default     = ""
-}
-
 variable "purge_lambda_name" {
-  description = "Function name of the purge Lambda (e.g., purge-deactivated-keys)"
+  description = "Function name of the purge Lambda"
   type        = string
   default     = "purge-deactivated-keys"
+}
+
+# Optional overrides (normally keep null to auto-resolve by name)
+variable "rotate_lambda_arn" {
+  description = "Optional ARN override for rotate Lambda"
+  type        = string
+  default     = null
+}
+
+variable "purge_lambda_arn" {
+  description = "Optional ARN override for purge Lambda"
+  type        = string
+  default     = null
+}
+
+# Look up existing Lambdas by name (they are deployed by GitHub Actions)
+data "aws_lambda_function" "rotate" {
+  function_name = var.rotate_lambda_name
+}
+
+data "aws_lambda_function" "purge" {
+  function_name = var.purge_lambda_name
+}
+
+locals {
+  rotate_lambda_arn = coalesce(var.rotate_lambda_arn, data.aws_lambda_function.rotate.arn)
+  purge_lambda_arn  = coalesce(var.purge_lambda_arn,  data.aws_lambda_function.purge.arn)
 }
 
 # Rotation rule & target
@@ -58,7 +71,7 @@ resource "aws_cloudwatch_event_target" "rotate_target" {
   count     = var.enable_eventbridge_targets ? 1 : 0
   rule      = aws_cloudwatch_event_rule.rotate_schedule[0].name
   target_id = "rotate-lambda"
-  arn       = var.rotate_lambda_arn
+  arn       = local.rotate_lambda_arn
 }
 
 resource "aws_lambda_permission" "rotate_events" {
@@ -81,7 +94,7 @@ resource "aws_cloudwatch_event_target" "purge_target" {
   count     = var.enable_eventbridge_targets ? 1 : 0
   rule      = aws_cloudwatch_event_rule.purge_schedule[0].name
   target_id = "purge-lambda"
-  arn       = var.purge_lambda_arn
+  arn       = local.purge_lambda_arn
 }
 
 resource "aws_lambda_permission" "purge_events" {
