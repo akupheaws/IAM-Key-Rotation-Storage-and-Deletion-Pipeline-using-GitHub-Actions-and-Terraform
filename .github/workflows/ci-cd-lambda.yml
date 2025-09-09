@@ -15,6 +15,9 @@ env:
   PYTHON_VERSION: "3.12"
   ROTATE_FUNC_NAME: rotate-and-deactivate-keys
   PURGE_FUNC_NAME: purge-deactivated-keys
+  ARTIFACT_DIR: artifacts
+  ROTATE_ZIP: artifacts/rotate_and_deactivate_keys.zip
+  PURGE_ZIP: artifacts/purge_deactivated_keys.zip
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -38,6 +41,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install ruff==0.6.9 pytest pytest-mock
+          # needed at test time
           pip install boto3 botocore
 
       - name: Lint with Ruff
@@ -55,33 +59,42 @@ jobs:
           AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
         run: pytest -q
 
+      - name: Prepare artifact dir
+        run: |
+          rm -rf "${{ env.ARTIFACT_DIR }}"
+          mkdir -p "${{ env.ARTIFACT_DIR }}"
+
       # -------- PACKAGE: rotate --------
       - name: Package rotate_and_deactivate_keys
         working-directory: lambdas/rotate_and_deactivate_keys
         run: |
           set -euo pipefail
-          rm -rf build ../../rotate_and_deactivate_keys.zip
+          rm -rf build
           mkdir -p build
           cp app.py build/
           if [ -s requirements.txt ]; then
             pip install -r requirements.txt -t build
           fi
-          cd build
-          zip -r ../../rotate_and_deactivate_keys.zip .
+          (cd build && zip -r "${GITHUB_WORKSPACE}/${{ env.ROTATE_ZIP }}" .)
 
       # -------- PACKAGE: purge --------
       - name: Package purge_deactivated_keys
         working-directory: lambdas/purge_deactivated_keys
         run: |
           set -euo pipefail
-          rm -rf build ../../purge_deactivated_keys.zip
+          rm -rf build
           mkdir -p build
           cp app.py build/
           if [ -s requirements.txt ]; then
             pip install -r requirements.txt -t build
           fi
-          cd build
-          zip -r ../../purge_deactivated_keys.zip .
+          (cd build && zip -r "${GITHUB_WORKSPACE}/${{ env.PURGE_ZIP }}" .)
+
+      - name: Show artifacts
+        run: |
+          ls -lah "${{ env.ARTIFACT_DIR }}"
+          test -s "${{ env.ROTATE_ZIP }}" || (echo "Missing rotate zip" && exit 1)
+          test -s "${{ env.PURGE_ZIP }}"  || (echo "Missing purge zip" && exit 1)
 
       # -------- AUTH (STATIC KEYS) --------
       - name: Configure AWS credentials
@@ -90,6 +103,17 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
+
+      # -------- PRE-FLIGHT SECRET CHECKS --------
+      - name: Check required secrets
+        shell: bash
+        run: |
+          : "${{ secrets.ROTATE_LAMBDA_ROLE_ARN?Missing secret ROTATE_LAMBDA_ROLE_ARN }}"
+          : "${{ secrets.PURGE_LAMBDA_ROLE_ARN?Missing secret PURGE_LAMBDA_ROLE_ARN }}"
+          : "${{ secrets.TARGET_USERNAME?Missing secret TARGET_USERNAME }}"
+          : "${{ secrets.SECRET_NAME?Missing secret SECRET_NAME }}"
+          : "${{ secrets.SNS_TOPIC_ARN?Missing secret SNS_TOPIC_ARN }}"
+          echo "All required secrets present."
 
       # -------- CREATE IF MISSING / DEPLOY: ROTATE --------
       - name: Ensure ${{ env.ROTATE_FUNC_NAME }} exists
@@ -103,14 +127,14 @@ jobs:
               --role "${{ secrets.ROTATE_LAMBDA_ROLE_ARN }}" \
               --timeout 60 \
               --memory-size 256 \
-              --zip-file fileb://rotate_and_deactivate_keys.zip
+              --zip-file fileb://"${{ env.ROTATE_ZIP }}"
           fi
 
       - name: Deploy ${{ env.ROTATE_FUNC_NAME }}
         run: |
           aws lambda update-function-code \
             --function-name "${ROTATE_FUNC_NAME}" \
-            --zip-file fileb://rotate_and_deactivate_keys.zip
+            --zip-file fileb://"${{ env.ROTATE_ZIP }}"
           aws lambda update-function-configuration \
             --function-name "${ROTATE_FUNC_NAME}" \
             --environment "Variables={TARGET_USERNAME=${{ secrets.TARGET_USERNAME }},SECRET_NAME=${{ secrets.SECRET_NAME }},SNS_TOPIC_ARN=${{ secrets.SNS_TOPIC_ARN }},SECRET_JSON_KEY=${{ secrets.SECRET_JSON_KEY || 'current' }}}"
@@ -127,14 +151,14 @@ jobs:
               --role "${{ secrets.PURGE_LAMBDA_ROLE_ARN }}" \
               --timeout 60 \
               --memory-size 256 \
-              --zip-file fileb://purge_deactivated_keys.zip
+              --zip-file fileb://"${{ env.PURGE_ZIP }}"
           fi
 
       - name: Deploy ${{ env.PURGE_FUNC_NAME }}
         run: |
           aws lambda update-function-code \
             --function-name "${PURGE_FUNC_NAME}" \
-            --zip-file fileb://purge_deactivated_keys.zip
+            --zip-file fileb://"${{ env.PURGE_ZIP }}"
           aws lambda update-function-configuration \
             --function-name "${PURGE_FUNC_NAME}" \
             --environment "Variables={TARGET_USERNAME=${{ secrets.TARGET_USERNAME }}}"
