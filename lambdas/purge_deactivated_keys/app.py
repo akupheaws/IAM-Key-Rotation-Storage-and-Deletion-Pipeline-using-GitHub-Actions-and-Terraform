@@ -1,8 +1,6 @@
 import os
-import json
 import datetime
 from typing import List
-
 import boto3
 from botocore.exceptions import ClientError
 
@@ -10,10 +8,10 @@ iam = boto3.client("iam")
 
 
 def _env(name: str, required: bool = True, default: str | None = None) -> str:
-    val = os.getenv(name, default)
-    if required and (val is None or val == ""):
+    v = os.getenv(name, default)
+    if required and (not v):
         raise RuntimeError(f"Missing required env var: {name}")
-    return val
+    return v
 
 
 def delete_inactive_keys(username: str) -> List[str]:
