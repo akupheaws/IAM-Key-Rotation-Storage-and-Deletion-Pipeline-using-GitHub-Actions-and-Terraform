@@ -34,7 +34,7 @@ env:
   TF_WORKING_DIR: terraform
   TF_STATE_KEY_PREFIX: key-rotation
 
-# Per-run concurrency avoids branch-level blocking that can keep jobs queued
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.run_id }}
   cancel-in-progress: true
@@ -72,7 +72,7 @@ jobs:
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
             -backend-config="encrypt=true"
 
-      # Normalize line endings so fmt behaves consistently on Linux runners
+      
       - name: Normalize .tf/.tfvars line endings
         run: |
           sudo apt-get update && sudo apt-get install -y dos2unix
@@ -123,7 +123,7 @@ jobs:
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
             -backend-config="encrypt=true"
 
-      # fail fast if secrets not set (avoids empty -var values)
+      
       - name: Check required inputs
         shell: bash
         env:

@@ -32,7 +32,7 @@ env:
   ROTATE_ZIP: artifacts/rotate_and_deactivate_keys.zip
   PURGE_ZIP:  artifacts/purge_deactivated_keys.zip
 
-# Per-run concurrency so queued runs don't block each other
+# Per run concurrency so queued runs don't block each other
 concurrency:
   group: ${{ github.workflow }}-${{ github.run_id }}
   cancel-in-progress: true
@@ -109,7 +109,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      # ---- PRE-FLIGHT SECRET CHECKS (fail fast if missing) ----
+      #PRE-FLIGHT SECRET CHECKS (fail fast if missing)
       - name: Check required secrets
         shell: bash
         env:
@@ -127,7 +127,7 @@ jobs:
           : "${SNS_TOPIC_ARN:?Missing secret SNS_TOPIC_ARN}"
           echo "All required secrets present."
 
-      # ---- Build artifacts (robust: always produces a zip even with no deps) ----
+      #Build artifacts (robust: always produces a zip even with no deps)
       - name: Prep artifact directory
         run: mkdir -p "${ARTIFACT_DIR}"
 
@@ -166,7 +166,7 @@ jobs:
             ${{ env.ROTATE_ZIP }}
             ${{ env.PURGE_ZIP }}
 
-      # ---- Deploy (idempotent, with waiters to avoid Pending/Creating conflicts) ----
+      
       - name: Deploy Lambda (rotate)
         shell: bash
         env:
