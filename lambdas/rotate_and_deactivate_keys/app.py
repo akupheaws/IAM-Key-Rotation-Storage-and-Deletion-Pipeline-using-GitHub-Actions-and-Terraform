@@ -6,10 +6,6 @@ from typing import Dict, Any, List
 import boto3
 from botocore.exceptions import ClientError
 
-iam = boto3.client("iam")
-secrets = boto3.client("secretsmanager")
-sns = boto3.client("sns")
-
 
 def _env(name: str, required: bool = True, default: str | None = None) -> str:
     val = os.getenv(name, default)
@@ -18,31 +14,37 @@ def _env(name: str, required: bool = True, default: str | None = None) -> str:
     return val
 
 
+def _clients():
+    # Create clients lazily to avoid needing AWS region at import time
+    session = boto3.session.Session()
+    return {
+        "iam": session.client("iam"),
+        "secrets": session.client("secretsmanager"),
+        "sns": session.client("sns"),
+    }
+
+
 def deactivate_old_active_keys(username: str) -> List[Dict[str, Any]]:
-    """Deactivate all ACTIVE keys except the newest one. Return changed metadata."""
+    iam = _clients()["iam"]
     resp = iam.list_access_keys(UserName=username)
     keys = resp.get("AccessKeyMetadata", [])
     if not keys:
         return []
     keys.sort(key=lambda k: k["CreateDate"], reverse=True)
-    to_deactivate = [k for k in keys if k["Status"] == "Active"][1:]  # keep newest
+    to_deactivate = [k for k in keys if k["Status"] == "Active"][1:]  # keep newest active
     changed = []
     for k in to_deactivate:
         try:
-            iam.update_access_key(
-                UserName=username, AccessKeyId=k["AccessKeyId"], Status="Inactive"
-            )
-            kk = dict(k)
-            kk["NewStatus"] = "Inactive"
-            changed.append(kk)
+            iam.update_access_key(UserName=username, AccessKeyId=k["AccessKeyId"], Status="Inactive")
+            kk = dict(k); kk["NewStatus"] = "Inactive"; changed.append(kk)
         except ClientError as e:
             print(f"Failed to deactivate {k['AccessKeyId']}: {e}")
     return changed
 
 
 def create_new_key(username: str) -> Dict[str, str]:
-    resp = iam.create_access_key(UserName=username)
-    ak = resp["AccessKey"]
+    iam = _clients()["iam"]
+    ak = iam.create_access_key(UserName=username)["AccessKey"]
     return {
         "AccessKeyId": ak["AccessKeyId"],
         "SecretAccessKey": ak["SecretAccessKey"],
@@ -52,6 +54,7 @@ def create_new_key(username: str) -> Dict[str, str]:
 
 
 def upsert_secret(secret_name: str, json_key: str, keypair: Dict[str, str]) -> None:
+    secrets = _clients()["secrets"]
     payload = json.dumps({json_key: keypair})
     try:
         secrets.put_secret_value(SecretId=secret_name, SecretString=payload)
@@ -60,11 +63,8 @@ def upsert_secret(secret_name: str, json_key: str, keypair: Dict[str, str]) -> N
 
 
 def notify(topic_arn: str, subject: str, message: Dict[str, Any]) -> None:
-    sns.publish(
-        TopicArn=topic_arn,
-        Subject=subject[:100],
-        Message=json.dumps(message, default=str, indent=2),
-    )
+    sns = _clients()["sns"]
+    sns.publish(TopicArn=topic_arn, Subject=subject[:100], Message=json.dumps(message, default=str, indent=2))
 
 
 def lambda_handler(event, context):
@@ -77,15 +77,14 @@ def lambda_handler(event, context):
     new_key = create_new_key(username)
     upsert_secret(secret_name, json_key, new_key)
 
-    now = datetime.datetime.utcnow().isoformat() + "Z"
-    msg = {
+    body = {
         "action": "rotate_and_deactivate_keys",
         "username": username,
         "deactivated_keys": [k["AccessKeyId"] for k in deactivated],
         "new_access_key_id": new_key["AccessKeyId"],
         "secret_name": secret_name,
         "secret_json_key": json_key,
-        "timestamp": now,
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
     }
-    notify(topic_arn, f"IAM key rotated for {username}", msg)
-    return {"statusCode": 200, "body": msg}
+    notify(topic_arn, f"IAM key rotated for {username}", body)
+    return {"statusCode": 200, "body": body}

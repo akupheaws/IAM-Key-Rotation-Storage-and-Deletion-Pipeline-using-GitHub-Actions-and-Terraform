@@ -4,8 +4,6 @@ from typing import List
 import boto3
 from botocore.exceptions import ClientError
 
-iam = boto3.client("iam")
-
 
 def _env(name: str, required: bool = True, default: str | None = None) -> str:
     v = os.getenv(name, default)
@@ -14,7 +12,12 @@ def _env(name: str, required: bool = True, default: str | None = None) -> str:
     return v
 
 
+def _iam():
+    return boto3.session.Session().client("iam")
+
+
 def delete_inactive_keys(username: str) -> List[str]:
+    iam = _iam()
     resp = iam.list_access_keys(UserName=username)
     keys = resp.get("AccessKeyMetadata", [])
     deleted: List[str] = []
