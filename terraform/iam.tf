@@ -2,7 +2,6 @@ locals {
   user_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${var.target_username}"
 }
 
-data "aws_caller_identity" "current" {}
 
 # ------------------------------------------------------------
 # Lambda Assume Role Policy
