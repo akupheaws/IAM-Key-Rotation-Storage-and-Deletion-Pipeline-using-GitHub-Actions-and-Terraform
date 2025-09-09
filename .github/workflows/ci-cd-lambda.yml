@@ -75,29 +75,11 @@ jobs:
           : "${SNS_TOPIC_ARN:?Missing secret SNS_TOPIC_ARN}"
           echo "All required secrets present."
 
-      # ---- Install dev tooling and deps ----
+      # ---- Install dev tooling and libs for tests ----
       - name: Install toolchain (ruff / pytest) + boto libs
         run: |
           python -m pip install --upgrade pip
           pip install ruff pytest boto3 botocore moto
-
-      - name: Install Lambda deps (rotate)
-        working-directory: lambdas/rotate_and_deactivate_keys
-        run: |
-          if [ -f requirements.txt ] && [ -s requirements.txt ]; then
-            pip install -r requirements.txt -t package
-          else
-            mkdir -p package
-          fi
-
-      - name: Install Lambda deps (purge)
-        working-directory: lambdas/purge_deactivated_keys
-        run: |
-          if [ -f requirements.txt ] && [ -s requirements.txt ]; then
-            pip install -r requirements.txt -t package
-          else
-            mkdir -p package
-          fi
 
       # ---- Lint ----
       - name: Ruff (lint)
@@ -110,15 +92,13 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
           AWS_REGION: ${{ env.AWS_REGION }}
-          # Provide env vars some tests may expect:
           TARGET_USERNAME: ${{ secrets.TARGET_USERNAME }}
           SECRET_NAME:     ${{ secrets.SECRET_NAME }}
           SNS_TOPIC_ARN:   ${{ secrets.SNS_TOPIC_ARN }}
           SECRET_JSON_KEY: ${{ secrets.SECRET_JSON_KEY || 'current' }}
-        run: |
-          pytest -q
+        run: pytest -q
 
-      # ---- Build artifacts ----
+      # ---- Build artifacts (robust: always produces a zip even with no deps) ----
       - name: Prep artifact directory
         run: mkdir -p "${ARTIFACT_DIR}"
 
@@ -126,21 +106,28 @@ jobs:
         working-directory: lambdas/rotate_and_deactivate_keys
         run: |
           set -euo pipefail
-          rm -f ../../${{ env.ROTATE_ZIP }} build.zip || true
-          # zip dependencies
-          (cd package && zip -r ../build.zip .)
-          # add handler (flatten path)
-          zip -j build.zip app.py
-          mv build.zip ../../${{ env.ROTATE_ZIP }}
+          rm -f ../../${{ env.ROTATE_ZIP }} || true
+          rm -rf build && mkdir -p build
+          # Install dependencies into build/ if requirements exist
+          if [ -s requirements.txt ]; then
+            pip install -r requirements.txt -t build
+          fi
+          # Add handler
+          cp app.py build/
+          # Zip everything
+          (cd build && zip -r ../../../${{ env.ROTATE_ZIP }} .)
 
       - name: Build ZIP (purge)
         working-directory: lambdas/purge_deactivated_keys
         run: |
           set -euo pipefail
-          rm -f ../../${{ env.PURGE_ZIP }} build.zip || true
-          (cd package && zip -r ../build.zip .)
-          zip -j build.zip app.py
-          mv build.zip ../../${{ env.PURGE_ZIP }}
+          rm -f ../../${{ env.PURGE_ZIP }} || true
+          rm -rf build && mkdir -p build
+          if [ -s requirements.txt ]; then
+            pip install -r requirements.txt -t build
+          fi
+          cp app.py build/
+          (cd build && zip -r ../../../${{ env.PURGE_ZIP }} .)
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
