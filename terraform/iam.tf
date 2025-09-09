@@ -19,7 +19,7 @@ data "aws_iam_policy_document" "lambda_assume_role" {
 # ------------------------------------------------------------
 # Rotate Lambda Role + Policy
 # ------------------------------------------------------------
-resource "aws_iam_role" "rotate_role" {
+resource "aws_iam_role" "rotate_lambda_exec" {
   name               = var.rotate_lambda_role_name
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
 }
@@ -33,6 +33,7 @@ data "aws_iam_policy_document" "rotate_inline" {
       "iam:CreateAccessKey",
       "iam:UpdateAccessKey",
     ]
+  # limit to the target user only
     resources = [local.user_arn]
   }
 
@@ -74,14 +75,14 @@ resource "aws_iam_policy" "rotate_policy" {
 }
 
 resource "aws_iam_role_policy_attachment" "rotate_attach" {
-  role       = aws_iam_role.rotate_role.name
+  role       = aws_iam_role.rotate_lambda_exec.name
   policy_arn = aws_iam_policy.rotate_policy.arn
 }
 
 # ------------------------------------------------------------
 # Purge Lambda Role + Policy
 # ------------------------------------------------------------
-resource "aws_iam_role" "purge_role" {
+resource "aws_iam_role" "purge_lambda_exec" {
   name               = var.purge_lambda_role_name
   assume_role_policy = data.aws_iam_policy_document.lambda_assume_role.json
 }
@@ -94,6 +95,7 @@ data "aws_iam_policy_document" "purge_inline" {
       "iam:ListAccessKeys",
       "iam:DeleteAccessKey",
     ]
+  # limit to the target user only
     resources = [local.user_arn]
   }
 
@@ -115,6 +117,6 @@ resource "aws_iam_policy" "purge_policy" {
 }
 
 resource "aws_iam_role_policy_attachment" "purge_attach" {
-  role       = aws_iam_role.purge_role.name
+  role       = aws_iam_role.purge_lambda_exec.name
   policy_arn = aws_iam_policy.purge_policy.arn
 }
