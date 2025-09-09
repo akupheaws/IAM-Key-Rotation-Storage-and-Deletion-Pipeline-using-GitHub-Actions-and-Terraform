@@ -1,0 +1,1 @@
+# Lambda includes boto3/botocore already; keep empty or pin extras here

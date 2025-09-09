@@ -1,0 +1,9 @@
+aws_region                  = "us-east-1"
+target_username             = "REPLACE_ME_IAM_USER"
+secret_name                 = "/infra/iam-rotated-key"
+secret_json_key             = "current"
+sns_topic_name              = "iam-key-rotation-notify-dev"
+sns_email_subscribers       = []
+rotate_lambda_function_name = "rotate-and-deactivate-keys"
+purge_lambda_function_name  = "purge-deactivated-keys"
+enable_eventbridge_targets  = false
