@@ -32,15 +32,67 @@ env:
   ROTATE_ZIP: artifacts/rotate_and_deactivate_keys.zip
   PURGE_ZIP:  artifacts/purge_deactivated_keys.zip
 
+# Per-run concurrency so queued runs don't block each other
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.run_id }}
   cancel-in-progress: true
 
 jobs:
-  build-test-deploy:
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment || 'dev' }}
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install ruff
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+
+      - name: Ruff (lint)
+        run: |
+          ruff --version
+          ruff check --output-format=github lambdas
+
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-24.04
+    needs: [lint]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest boto3 botocore moto
+
+      - name: Run pytest
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          AWS_REGION: ${{ env.AWS_REGION }}
+          TARGET_USERNAME: ${{ secrets.TARGET_USERNAME }}
+          SECRET_NAME:     ${{ secrets.SECRET_NAME }}
+          SNS_TOPIC_ARN:   ${{ secrets.SNS_TOPIC_ARN }}
+          SECRET_JSON_KEY: ${{ secrets.SECRET_JSON_KEY || 'current' }}
+        run: pytest -q
+
+  deploy:
+    name: Deploy (package + Lambda update)
+    runs-on: ubuntu-24.04
+    needs: [test]
+    environment: ${{ inputs.environment || 'dev' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,29 +126,6 @@ jobs:
           : "${SECRET_NAME:?Missing secret SECRET_NAME}"
           : "${SNS_TOPIC_ARN:?Missing secret SNS_TOPIC_ARN}"
           echo "All required secrets present."
-
-      # ---- Install dev tooling and libs for tests ----
-      - name: Install toolchain (ruff / pytest) + boto libs
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff pytest boto3 botocore moto
-
-      # ---- Lint ----
-      - name: Ruff (lint)
-        run: |
-          ruff --version
-          ruff check --output-format=github lambdas
-
-      # ---- Test ----
-      - name: Pytest
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-          AWS_REGION: ${{ env.AWS_REGION }}
-          TARGET_USERNAME: ${{ secrets.TARGET_USERNAME }}
-          SECRET_NAME:     ${{ secrets.SECRET_NAME }}
-          SNS_TOPIC_ARN:   ${{ secrets.SNS_TOPIC_ARN }}
-          SECRET_JSON_KEY: ${{ secrets.SECRET_JSON_KEY || 'current' }}
-        run: pytest -q
 
       # ---- Build artifacts (robust: always produces a zip even with no deps) ----
       - name: Prep artifact directory
@@ -146,7 +175,6 @@ jobs:
           ZIP:       ${{ env.ROTATE_ZIP }}
         run: |
           set -euo pipefail
-
           if aws lambda get-function --function-name "$FUNC_NAME" >/dev/null 2>&1; then
             echo "Function exists; wait ACTIVE then update code..."
             aws lambda wait function-active --function-name "$FUNC_NAME" || true
@@ -165,7 +193,6 @@ jobs:
             echo "Waiting until ACTIVE..."
             aws lambda wait function-active --function-name "$FUNC_NAME"
           fi
-
           echo "Updating configuration (env vars)..."
           aws lambda update-function-configuration \
             --function-name "$FUNC_NAME" \
@@ -180,7 +207,6 @@ jobs:
           ZIP:       ${{ env.PURGE_ZIP }}
         run: |
           set -euo pipefail
-
           if aws lambda get-function --function-name "$FUNC_NAME" >/dev/null 2>&1; then
             echo "Function exists; wait ACTIVE then update code..."
             aws lambda wait function-active --function-name "$FUNC_NAME" || true
@@ -199,7 +225,6 @@ jobs:
             echo "Waiting until ACTIVE..."
             aws lambda wait function-active --function-name "$FUNC_NAME"
           fi
-
           echo "Updating configuration (env vars)..."
           aws lambda update-function-configuration \
             --function-name "$FUNC_NAME" \
