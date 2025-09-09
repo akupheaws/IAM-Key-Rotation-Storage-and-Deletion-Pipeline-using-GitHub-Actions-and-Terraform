@@ -1,59 +1,82 @@
-name: CI / CD (Terraform + Python)
+name: CI / CD (Lambda - Lint, Test, Deploy)
 
 on:
   push:
     branches: ["main"]
   pull_request:
     branches: ["main"]
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 env:
   AWS_REGION: us-east-1
+  PYTHON_VERSION: "3.12"
+  ROTATE_FUNC_NAME: rotate-and-deactivate-keys
+  PURGE_FUNC_NAME: purge-deactivated-keys
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  lint-test-deploy:
-    name: Lint, Test & Deploy Lambdas
+  lint-test-package-deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies
+      # -------- LINT --------
+      - name: Install lint & test deps
         run: |
           python -m pip install --upgrade pip
-          pip install ruff pytest
-
-      - name: Lint with Ruff
+          pip install ruff==0.6.9 pytest pytest-mock
+          # Install runtime libs needed only for import-time (tests import boto3)
+          pip install boto3 botocore
+      - name: Ruff lint
         run: ruff check --output-format=github .
 
+      # -------- TEST --------
       - name: Run tests
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: pytest -q
 
-      - name: Package rotate-and-deactivate-keys
+      # -------- PACKAGE: rotate --------
+      - name: Package rotate_and_deactivate_keys
+        working-directory: lambdas/rotate_and_deactivate_keys
         run: |
-          cd lambdas/rotate_and_deactivate_keys
-          zip -r ../../rotate-and-deactivate-keys.zip .
-          cd ../..
+          rm -rf package ../../rotate_and_deactivate_keys.zip
+          if [ -s requirements.txt ]; then
+            pip install -r requirements.txt -t package
+          else
+            mkdir -p package
+          fi
+          cd package && zip -r ../../../rotate_and_deactivate_keys.zip . && cd ..
+          # add only the handler file (exclude tests from artifact)
+          zip -g ../../rotate_and_deactivate_keys.zip app.py
 
-      - name: Package purge-deactivated-keys
+      # -------- PACKAGE: purge --------
+      - name: Package purge_deactivated_keys
+        working-directory: lambdas/purge_deactivated_keys
         run: |
-          cd lambdas/purge_deactivated_keys
-          zip -r ../../purge-deactivated-keys.zip .
-          cd ../..
+          rm -rf package ../../purge_deactivated_keys.zip
+          if [ -s requirements.txt ]; then
+            pip install -r requirements.txt -t package
+          else
+            mkdir -p package
+          fi
+          cd package && zip -r ../../../purge_deactivated_keys.zip . && cd ..
+          zip -g ../../purge_deactivated_keys.zip app.py
 
+      # -------- AUTH (STATIC KEYS) --------
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -61,28 +84,49 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy rotate-and-deactivate-keys
+      # -------- CREATE IF MISSING / DEPLOY --------
+      - name: Ensure ${{ env.ROTATE_FUNC_NAME }} exists
+        shell: bash
         run: |
-          aws lambda get-function --function-name rotate-and-deactivate-keys \
-            || aws lambda create-function \
-              --function-name rotate-and-deactivate-keys \
+          if ! aws lambda get-function --function-name "${ROTATE_FUNC_NAME}" >/dev/null 2>&1; then
+            aws lambda create-function \
+              --function-name "${ROTATE_FUNC_NAME}" \
               --runtime python3.12 \
-              --role ${{ secrets.ROTATE_FUNC_ROLE_ARN }} \
               --handler app.lambda_handler \
-              --zip-file fileb://rotate-and-deactivate-keys.zip
-          aws lambda update-function-code \
-            --function-name rotate-and-deactivate-keys \
-            --zip-file fileb://rotate-and-deactivate-keys.zip
+              --role "${{ secrets.ROTATE_LAMBDA_ROLE_ARN }}" \
+              --timeout 60 \
+              --memory-size 256 \
+              --zip-file fileb://rotate_and_deactivate_keys.zip
+          fi
 
-      - name: Deploy purge-deactivated-keys
+      - name: Deploy ${{ env.ROTATE_FUNC_NAME }}
         run: |
-          aws lambda get-function --function-name purge-deactivated-keys \
-            || aws lambda create-function \
-              --function-name purge-deactivated-keys \
-              --runtime python3.12 \
-              --role ${{ secrets.PURGE_FUNC_ROLE_ARN }} \
-              --handler app.lambda_handler \
-              --zip-file fileb://purge-deactivated-keys.zip
           aws lambda update-function-code \
-            --function-name purge-deactivated-keys \
-            --zip-file fileb://purge-deactivated-keys.zip
+            --function-name "${ROTATE_FUNC_NAME}" \
+            --zip-file fileb://rotate_and_deactivate_keys.zip
+          aws lambda update-function-configuration \
+            --function-name "${ROTATE_FUNC_NAME}" \
+            --environment "Variables={TARGET_USERNAME=${{ secrets.TARGET_USERNAME }},SECRET_NAME=${{ secrets.SECRET_NAME }},SNS_TOPIC_ARN=${{ secrets.SNS_TOPIC_ARN }},SECRET_JSON_KEY=${{ secrets.SECRET_JSON_KEY || 'current' }}}"
+
+      - name: Ensure ${{ env.PURGE_FUNC_NAME }} exists
+        shell: bash
+        run: |
+          if ! aws lambda get-function --function-name "${PURGE_FUNC_NAME}" >/dev/null 2>&1; then
+            aws lambda create-function \
+              --function-name "${PURGE_FUNC_NAME}" \
+              --runtime python3.12 \
+              --handler app.lambda_handler \
+              --role "${{ secrets.PURGE_LAMBDA_ROLE_ARN }}" \
+              --timeout 60 \
+              --memory-size 256 \
+              --zip-file fileb://purge_deactivated_keys.zip
+          fi
+
+      - name: Deploy ${{ env.PURGE_FUNC_NAME }}
+        run: |
+          aws lambda update-function-code \
+            --function-name "${PURGE_FUNC_NAME}" \
+            --zip-file fileb://purge_deactivated_keys.zip
+          aws lambda update-function-configuration \
+            --function-name "${PURGE_FUNC_NAME}" \
+            --environment "Variables={TARGET_USERNAME=${{ secrets.TARGET_USERNAME }}}"
