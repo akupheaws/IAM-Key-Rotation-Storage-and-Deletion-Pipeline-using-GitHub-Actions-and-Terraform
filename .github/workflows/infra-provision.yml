@@ -1,6 +1,11 @@
 name: Infra Provisioning (Terraform with Remote Backend)
 
 on:
+  push:
+    branches: ["main"]
+    paths:
+      - "terraform/**"
+      - ".github/workflows/infra-provision.yml"
   pull_request:
     branches: ["main"]
     paths:
@@ -9,13 +14,13 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Environment"
+        description: "Environment (used for workflow_dispatch and shown in env badge)"
         required: true
         default: "dev"
         type: choice
         options: ["dev", "stage", "prod"]
       action:
-        description: "Terraform action (plan or apply)"
+        description: "Terraform action"
         required: true
         default: "plan"
         type: choice
@@ -31,6 +36,7 @@ env:
 
 jobs:
   lint-validate:
+    name: Lint & Validate
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -53,22 +59,20 @@ jobs:
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ github.event.inputs.environment || 'dev' }}.tfstate" \
+            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/$([[ '${{ github.event_name }}' == 'push' ]] && echo dev || echo ${{ github.event.inputs.environment || 'dev' }}).tfstate" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
             -backend-config="encrypt=true"
 
-      # --- Make fmt reliable on Linux runners ---
+      # Normalize & write fmt so fmt never causes a red build
       - name: Normalize line endings for .tf/.tfvars
         run: |
           sudo apt-get update && sudo apt-get install -y dos2unix
           git ls-files '*.tf' '*.tfvars' | xargs -I{} dos2unix {}
 
-      # Write fmt so whitespace never blocks the run
       - name: Terraform fmt (write)
         run: terraform fmt -recursive
 
-      # Keep a check step (will pass since we wrote fmt above)
       - name: Terraform Format Check
         run: terraform fmt -check -recursive
 
@@ -76,15 +80,17 @@ jobs:
         run: terraform validate
 
   plan:
+    name: Terraform Plan
     needs: [lint-validate]
-    if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'plan')
+    if: >
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'plan')
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
@@ -104,6 +110,19 @@ jobs:
             -backend-config="region=${{ secrets.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
             -backend-config="encrypt=true"
+
+      # fail fast if secrets not set (avoids empty -var values)
+      - name: Check required secrets
+        shell: bash
+        env:
+          TARGET_USERNAME: ${{ secrets.TARGET_USERNAME }}
+          SECRET_NAME:     ${{ secrets.SECRET_NAME }}
+          SECRET_JSON_KEY: ${{ secrets.SECRET_JSON_KEY }}
+        run: |
+          set -euo pipefail
+          : "${TARGET_USERNAME:?Missing secret TARGET_USERNAME}"
+          : "${SECRET_NAME:?Missing secret SECRET_NAME}"
+          echo "All required secrets present."
 
       - name: Terraform Plan
         run: |
@@ -120,17 +139,21 @@ jobs:
           path: ${{ env.TF_WORKING_DIR }}/tfplan.txt
 
   apply:
+    name: Terraform Apply
     needs: [lint-validate]
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply'
+    # FIX: run on workflow_dispatch with action=apply OR push to main (auto-apply dev)
+    if: >
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply') ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    # For push->main we pin environment to 'dev'. For workflow_dispatch we respect the input.
     environment:
-      name: ${{ github.event.inputs.environment || 'dev' }}
+      name: ${{ github.event_name == 'push' && 'dev' || github.event.inputs.environment || 'dev' }}
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
@@ -146,10 +169,23 @@ jobs:
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ github.event.inputs.environment || 'dev' }}.tfstate" \
+            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/$([[ '${{ github.event_name }}' == 'push' ]] && echo dev || echo ${{ github.event.inputs.environment || 'dev' }}).tfstate" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
             -backend-config="encrypt=true"
+
+      # fail fast if secrets not set
+      - name: Check required secrets
+        shell: bash
+        env:
+          TARGET_USERNAME: ${{ secrets.TARGET_USERNAME }}
+          SECRET_NAME:     ${{ secrets.SECRET_NAME }}
+          SECRET_JSON_KEY: ${{ secrets.SECRET_JSON_KEY }}
+        run: |
+          set -euo pipefail
+          : "${TARGET_USERNAME:?Missing secret TARGET_USERNAME}"
+          : "${SECRET_NAME:?Missing secret SECRET_NAME}"
+          echo "All required secrets present."
 
       - name: Terraform Apply
         run: |
