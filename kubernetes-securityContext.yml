@@ -1,0 +1,32 @@
+# Build Stage
+# Use a full-featured image for building the application
+FROM python:3.9-slim as builder
+
+WORKDIR /app
+
+# Install build dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Final Stage
+# Use a minimal, secure base image for the final container
+FROM python:3.9-alpine
+
+WORKDIR /app
+
+# Create a non-root user and group
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copy only the installed packages from the builder stage
+COPY --from=builder /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
+# Copy the application code
+COPY --from=builder /app /app
+
+# Switch to the non-root user
+USER appuser
+
+# Command to run the application
+CMD ["python", "app.py"]
