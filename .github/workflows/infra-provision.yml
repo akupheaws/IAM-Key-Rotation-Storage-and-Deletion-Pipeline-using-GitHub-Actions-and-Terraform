@@ -14,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "Environment (used for workflow_dispatch and shown in env badge)"
+        description: "Environment (dev, stage, prod)"
         required: true
         default: "dev"
         type: choice
@@ -34,10 +34,15 @@ env:
   TF_WORKING_DIR: terraform
   TF_STATE_KEY_PREFIX: key-rotation
 
+# Per-run concurrency avoids branch-level blocking that can keep jobs queued
+concurrency:
+  group: ${{ github.workflow }}-${{ github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   lint-validate:
     name: Lint & Validate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -51,21 +56,24 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Set effective environment
+        run: echo "EFFECTIVE_ENV=${{ github.event_name == 'push' && 'dev' || github.event.inputs.environment || 'dev' }}" >> "$GITHUB_ENV"
 
       - name: Terraform Init (S3 backend)
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/$([[ '${{ github.event_name }}' == 'push' ]] && echo dev || echo ${{ github.event.inputs.environment || 'dev' }}).tfstate" \
+            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ env.EFFECTIVE_ENV }}.tfstate" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
             -backend-config="encrypt=true"
 
-      # Normalize & write fmt so fmt never causes a red build
-      - name: Normalize line endings for .tf/.tfvars
+      # Normalize line endings so fmt behaves consistently on Linux runners
+      - name: Normalize .tf/.tfvars line endings
         run: |
           sudo apt-get update && sudo apt-get install -y dos2unix
           git ls-files '*.tf' '*.tfvars' | xargs -I{} dos2unix {}
@@ -85,12 +93,13 @@ jobs:
     if: >
       github.event_name == 'pull_request' ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'plan')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
@@ -98,31 +107,33 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Set effective environment
+        run: echo "EFFECTIVE_ENV=${{ github.event.inputs.environment || 'dev' }}" >> "$GITHUB_ENV"
 
       - name: Terraform Init (S3 backend)
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ github.event.inputs.environment || 'dev' }}.tfstate" \
+            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ env.EFFECTIVE_ENV }}.tfstate" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
             -backend-config="encrypt=true"
 
       # fail fast if secrets not set (avoids empty -var values)
-      - name: Check required secrets
+      - name: Check required inputs
         shell: bash
         env:
           TARGET_USERNAME: ${{ secrets.TARGET_USERNAME }}
           SECRET_NAME:     ${{ secrets.SECRET_NAME }}
-          SECRET_JSON_KEY: ${{ secrets.SECRET_JSON_KEY }}
         run: |
           set -euo pipefail
           : "${TARGET_USERNAME:?Missing secret TARGET_USERNAME}"
           : "${SECRET_NAME:?Missing secret SECRET_NAME}"
-          echo "All required secrets present."
+          echo "All required inputs present."
 
       - name: Terraform Plan
         run: |
@@ -130,7 +141,8 @@ jobs:
             -var="aws_region=${{ secrets.AWS_REGION }}" \
             -var="target_username=${{ secrets.TARGET_USERNAME }}" \
             -var="secret_name=${{ secrets.SECRET_NAME }}" \
-            -var="secret_json_key=${{ secrets.SECRET_JSON_KEY || 'current' }}"
+            -var="secret_json_key=${{ secrets.SECRET_JSON_KEY || 'current' }}" \
+            -var="enable_eventbridge_targets=true"
           terraform show -no-color tfplan.bin > tfplan.txt
 
       - uses: actions/upload-artifact@v4
@@ -141,19 +153,20 @@ jobs:
   apply:
     name: Terraform Apply
     needs: [lint-validate]
-    # FIX: run on workflow_dispatch with action=apply OR push to main (auto-apply dev)
+    # Run when: manual dispatch with action=apply OR push to main (auto-apply to dev)
     if: >
       (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply') ||
       (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    runs-on: ubuntu-latest
-    # For push->main we pin environment to 'dev'. For workflow_dispatch we respect the input.
+    runs-on: ubuntu-24.04
     environment:
+      # For push->main we pin to 'dev'; for manual dispatch we respect the input
       name: ${{ github.event_name == 'push' && 'dev' || github.event.inputs.environment || 'dev' }}
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
     steps:
       - uses: actions/checkout@v4
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
@@ -161,31 +174,32 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      - name: Set effective environment
+        run: echo "EFFECTIVE_ENV=${{ github.event_name == 'push' && 'dev' || github.event.inputs.environment || 'dev' }}" >> "$GITHUB_ENV"
 
       - name: Terraform Init (S3 backend)
         run: |
           terraform init -input=false \
             -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
-            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/$([[ '${{ github.event_name }}' == 'push' ]] && echo dev || echo ${{ github.event.inputs.environment || 'dev' }}).tfstate" \
+            -backend-config="key=${{ env.TF_STATE_KEY_PREFIX }}/${{ env.EFFECTIVE_ENV }}.tfstate" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ secrets.TF_STATE_TABLE }}" \
             -backend-config="encrypt=true"
 
-      # fail fast if secrets not set
-      - name: Check required secrets
+      - name: Check required inputs
         shell: bash
         env:
           TARGET_USERNAME: ${{ secrets.TARGET_USERNAME }}
           SECRET_NAME:     ${{ secrets.SECRET_NAME }}
-          SECRET_JSON_KEY: ${{ secrets.SECRET_JSON_KEY }}
         run: |
           set -euo pipefail
           : "${TARGET_USERNAME:?Missing secret TARGET_USERNAME}"
           : "${SECRET_NAME:?Missing secret SECRET_NAME}"
-          echo "All required secrets present."
+          echo "All required inputs present."
 
       - name: Terraform Apply
         run: |
@@ -193,4 +207,9 @@ jobs:
             -var="aws_region=${{ secrets.AWS_REGION }}" \
             -var="target_username=${{ secrets.TARGET_USERNAME }}" \
             -var="secret_name=${{ secrets.SECRET_NAME }}" \
-            -var="secret_json_key=${{ secrets.SECRET_JSON_KEY || 'current' }}"
+            -var="secret_json_key=${{ secrets.SECRET_JSON_KEY || 'current' }}" \
+            -var="enable_eventbridge_targets=true"
+
+      # Handy: print outputs so you can copy to Actions secrets if needed
+      - name: Show Terraform outputs
+        run: terraform output -json | jq -r 'to_entries[] | "\(.key)=\(.value.value)"'
